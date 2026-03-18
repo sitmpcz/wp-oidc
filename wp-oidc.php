@@ -19,7 +19,12 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 // Load Composer autoloader
-require_once __DIR__ . '/vendor/autoload.php';
+$autoload_path = __DIR__ . '/vendor/autoload.php';
+if (!file_exists($autoload_path)) {
+	// In Bedrock, vendor is in the root directory
+	$autoload_path = dirname(dirname(dirname(__DIR__))) . '/vendor/autoload.php';
+}
+require_once $autoload_path;
 
 // Load plugin classes
 require_once __DIR__ . '/includes/class-oidc-client.php';
