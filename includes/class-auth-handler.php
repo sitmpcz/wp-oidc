@@ -1,0 +1,227 @@
+<?php
+
+namespace WpOidc;
+
+/**
+ * WordPress authentication handler for OIDC
+ */
+class AuthHandler {
+
+	private OidcClient $oidc_client;
+
+	/**
+	 * Initialize the authentication handler
+	 */
+	public function init(): void {
+		// Verify plugin is enabled
+		if ( ! $this->get_setting( 'enabled' ) ) {
+			return;
+		}
+
+		// Verify required settings are configured
+		if ( ! $this->has_required_config() ) {
+			return;
+		}
+
+		// Initialize OIDC client
+		$this->init_oidc_client();
+
+		// Register hooks
+		add_action( 'init', [ $this, 'handle_oidc_callback' ], 10 );
+		add_action( 'login_form_login', [ $this, 'redirect_to_oidc' ], 10 );
+		add_action( 'wp_logout', [ $this, 'handle_logout' ], 10 );
+	}
+
+	/**
+	 * Check if required OIDC settings are configured
+	 *
+	 * @return bool
+	 */
+	private function has_required_config(): bool {
+		return ! empty( $this->get_setting( 'issuer_url' ) ) &&
+		       ! empty( $this->get_setting( 'client_id' ) ) &&
+		       ! empty( $this->get_setting( 'client_secret' ) );
+	}
+
+	/**
+	 * Initialize the OIDC client with configuration from env or WordPress options
+	 */
+	private function init_oidc_client(): void {
+		$issuer = $this->get_setting( 'issuer_url' );
+		$client_id = $this->get_setting( 'client_id' );
+		$client_secret = $this->get_setting( 'client_secret' );
+		$redirect_uri = $this->get_redirect_uri();
+
+		$this->oidc_client = new OidcClient(
+			$issuer,
+			$client_id,
+			$client_secret,
+			$redirect_uri
+		);
+	}
+
+	/**
+	 * Get setting from environment variable or WordPress option
+	 *
+	 * Environment variables have priority over WordPress options.
+	 *
+	 * @param string $setting Setting name (issuer_url, client_id, client_secret, redirect_uri, enabled)
+	 *
+	 * @return mixed Setting value or empty string if not configured
+	 */
+	private function get_setting( string $setting ): mixed {
+		// Map setting name to environment variable
+		$env_map = [
+			'issuer_url'    => 'WP_OIDC_ISSUER_URL',
+			'client_id'     => 'WP_OIDC_CLIENT_ID',
+			'client_secret' => 'WP_OIDC_CLIENT_SECRET',
+			'redirect_uri'  => 'WP_OIDC_REDIRECT_URI',
+			'enabled'       => 'WP_OIDC_ENABLED',
+		];
+
+		$env_var = $env_map[ $setting ] ?? null;
+
+		// Check environment variable first
+		if ( $env_var ) {
+			$env_value = getenv( $env_var );
+			if ( false !== $env_value && '' !== $env_value ) {
+				return $env_value;
+			}
+		}
+
+		// Fall back to WordPress option
+		$option_name = 'wp_oidc_' . $setting;
+		return get_option( $option_name ) ?? '';
+	}
+
+	/**
+	 * Get the redirect URI (callback URL)
+	 *
+	 * @return string
+	 */
+	private function get_redirect_uri(): string {
+		$configured = $this->get_setting( 'redirect_uri' );
+		if ( ! empty( $configured ) ) {
+			return $configured;
+		}
+
+		// Default: wp-login.php with oidc_callback parameter
+		return add_query_arg( 'oidc_callback', '1', wp_login_url() );
+	}
+
+	/**
+	 * Redirect to Keycloak login on WP login page (if not callback)
+	 */
+	public function redirect_to_oidc(): void {
+		// Skip if this is a callback request
+		if ( ! empty( $_GET['oidc_callback'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+			return;
+		}
+
+		// Skip if user is already logged in
+		if ( is_user_logged_in() ) {
+			return;
+		}
+
+		// Redirect to Keycloak
+		$auth_url = $this->oidc_client->get_authorization_url();
+		wp_redirect( $auth_url );
+		exit;
+	}
+
+	/**
+	 * Handle OIDC callback - exchange code for user info and log in
+	 */
+	public function handle_oidc_callback(): void {
+		// Check if this is an OIDC callback
+		if ( empty( $_GET['oidc_callback'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+			return;
+		}
+
+		// Skip if user is already logged in
+		if ( is_user_logged_in() ) {
+			wp_redirect( admin_url() );
+			exit;
+		}
+
+		try {
+			// Get query parameters
+			$query_params = array_map( 'sanitize_text_field', $_GET ); // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+
+			// Handle callback
+			$user_info = $this->oidc_client->handle_callback( $query_params );
+
+			// Validate email
+			if ( empty( $user_info['email'] ) ) {
+				$this->handle_error( 'No email in token' );
+			}
+
+			// Find user by email
+			$user = get_user_by( 'email', $user_info['email'] );
+
+			if ( ! $user ) {
+				$this->handle_error(
+					'User not found',
+					'User with email ' . esc_html( $user_info['email'] ) . ' does not exist'
+				);
+			}
+
+			// Set authentication cookie
+			wp_set_auth_cookie( $user->ID );
+
+			// Store Keycloak ID for backchannel logout
+			if ( ! empty( $user_info['sub'] ) ) {
+				update_user_meta( $user->ID, 'wp_oidc_keycloak_id', $user_info['sub'] );
+			}
+
+			// Store user info in session for later reference
+			if ( session_status() === PHP_SESSION_NONE ) {
+				session_start();
+			}
+			$_SESSION['wp_oidc_user_info'] = $user_info;
+
+			// Redirect to admin
+			wp_redirect( admin_url() );
+			exit;
+		} catch ( \Exception $e ) {
+			$this->handle_error( 'Authentication failed', $e->getMessage() );
+		}
+	}
+
+	/**
+	 * Handle logout - redirect to Keycloak logout
+	 */
+	public function handle_logout(): void {
+		// Get ID token if available (for RP-initiated logout)
+		$id_token = null;
+		if ( session_status() === PHP_SESSION_NONE ) {
+			session_start();
+		}
+		if ( ! empty( $_SESSION['wp_oidc_id_token'] ) ) {
+			$id_token = $_SESSION['wp_oidc_id_token'];
+		}
+
+		// Redirect to Keycloak logout
+		$logout_url = $this->oidc_client->get_logout_url( $id_token );
+		wp_redirect( $logout_url );
+		exit;
+	}
+
+	/**
+	 * Handle authentication error
+	 *
+	 * @param string $error_code Error code
+	 * @param string $error_message Error message (optional)
+	 */
+	private function handle_error( string $error_code, string $error_message = '' ): void {
+		$url = wp_login_url();
+		$url = add_query_arg( 'oidc_error', urlencode( $error_code ), $url );
+
+		if ( ! empty( $error_message ) ) {
+			$url = add_query_arg( 'oidc_error_description', urlencode( $error_message ), $url );
+		}
+
+		wp_redirect( $url );
+		exit;
+	}
+}

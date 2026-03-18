@@ -1,0 +1,27 @@
+# Environment variables (KEEP SECRETS SAFE!)
+.env
+.env.local
+.env.*.local
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor backups
+*.swp
+*.swo
+*~
+
+# Composer
+/vendor/
+composer.lock
+
+# WordPress development
+wp-config-local.php
+wp-config-dev.php
+debug.log
+docker-compose.yml
