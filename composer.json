@@ -1,5 +1,5 @@
 {
-  "name": "dubovsky/wp-oidc",
+  "name": "sitmpcz/wp-oidc",
   "description": "WordPress OIDC plugin for Keycloak authentication",
   "require": {
     "php": ">=8.0",
