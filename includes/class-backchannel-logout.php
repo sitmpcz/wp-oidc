@@ -67,7 +67,10 @@ class BackchannelLogout {
 				return;
 			}
 
-			// Get all sessions for this user and destroy them
+			// Destroy all OIDC session tokens (custom cookie mechanism)
+			AuthHandler::destroy_user_oidc_sessions( $user->ID );
+
+			// Also destroy any standard WordPress sessions
 			$sessions = WP_Session_Tokens::get_instance( $user->ID );
 			$sessions->destroy_all();
 

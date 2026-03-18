@@ -7,6 +7,8 @@ namespace WpOidc;
  */
 class AuthHandler {
 
+	private const COOKIE_NAME = 'wp_oidc_session';
+
 	private OidcClient $oidc_client;
 
 	/**
@@ -27,6 +29,7 @@ class AuthHandler {
 		$this->init_oidc_client();
 
 		// Register hooks
+		add_filter( 'determine_current_user', [ $this, 'determine_oidc_user' ], 5 );
 		add_action( 'init', [ $this, 'handle_oidc_callback' ], 10 );
 		add_action( 'login_form_login', [ $this, 'redirect_to_oidc' ], 10 );
 		add_action( 'wp_logout', [ $this, 'handle_logout' ], 10 );
@@ -166,8 +169,8 @@ class AuthHandler {
 				);
 			}
 
-			// Set authentication cookie
-			wp_set_auth_cookie( $user->ID );
+			// Set custom session cookie (without username, to avoid WAF/firewall issues)
+			$this->set_oidc_session_cookie( $user->ID );
 
 			// Store Keycloak ID for backchannel logout
 			if ( ! empty( $user_info['sub'] ) ) {
@@ -192,6 +195,9 @@ class AuthHandler {
 	 * Handle logout - redirect to Keycloak logout
 	 */
 	public function handle_logout(): void {
+		// Clear OIDC session cookie
+		$this->clear_oidc_session_cookie();
+
 		// Get ID token if available (for RP-initiated logout)
 		$id_token = null;
 		if ( session_status() === PHP_SESSION_NONE ) {
@@ -205,6 +211,128 @@ class AuthHandler {
 		$logout_url = $this->oidc_client->get_logout_url( $id_token );
 		wp_redirect( $logout_url );
 		exit;
+	}
+
+	/**
+	 * Validate OIDC session cookie and return user ID
+	 *
+	 * Hooked on determine_current_user (priority 5) to authenticate users
+	 * via opaque session token instead of WordPress's default username-in-cookie mechanism.
+	 *
+	 * @param int|false $user_id User ID from earlier filter or false
+	 *
+	 * @return int|false User ID if OIDC session is valid, original value otherwise
+	 */
+	public function determine_oidc_user( mixed $user_id ): mixed {
+		if ( $user_id ) {
+			return $user_id;
+		}
+
+		if ( empty( $_COOKIE[ self::COOKIE_NAME ] ) ) {
+			return false;
+		}
+
+		$token = sanitize_text_field( wp_unslash( $_COOKIE[ self::COOKIE_NAME ] ) );
+		if ( empty( $token ) ) {
+			return false;
+		}
+
+		$stored_user_id = get_transient( 'wp_oidc_' . hash( 'sha256', $token ) );
+		if ( ! $stored_user_id ) {
+			return false;
+		}
+
+		return (int) $stored_user_id;
+	}
+
+	/**
+	 * Set opaque OIDC session cookie (no username in cookie value)
+	 *
+	 * @param int $user_id WordPress user ID
+	 */
+	private function set_oidc_session_cookie( int $user_id ): void {
+		$token      = bin2hex( random_bytes( 32 ) ); // 256-bit random token
+		$expiration = time() + 8 * HOUR_IN_SECONDS;
+		$token_hash = hash( 'sha256', $token );
+
+		// Store mapping token_hash -> user_id in transient for fast O(1) lookup
+		set_transient( 'wp_oidc_' . $token_hash, $user_id, 8 * HOUR_IN_SECONDS );
+
+		// Store token hashes in user meta to allow bulk invalidation (backchannel logout)
+		$user_tokens = get_user_meta( $user_id, 'wp_oidc_session_tokens', true );
+		if ( ! is_array( $user_tokens ) ) {
+			$user_tokens = [];
+		}
+		// Prune tokens that no longer exist in transient store
+		$user_tokens   = array_filter( $user_tokens, fn( $h ) => false !== get_transient( 'wp_oidc_' . $h ) );
+		$user_tokens[] = $token_hash;
+		update_user_meta( $user_id, 'wp_oidc_session_tokens', array_values( $user_tokens ) );
+
+		setcookie(
+			self::COOKIE_NAME,
+			$token,
+			[
+				'expires'  => $expiration,
+				'path'     => COOKIEPATH ?: '/',
+				'domain'   => COOKIE_DOMAIN ?: '',
+				'secure'   => is_ssl(),
+				'httponly' => true,
+				'samesite' => 'Lax',
+			]
+		);
+	}
+
+	/**
+	 * Clear OIDC session cookie and invalidate the token in transient store
+	 */
+	private function clear_oidc_session_cookie(): void {
+		if ( ! empty( $_COOKIE[ self::COOKIE_NAME ] ) ) {
+			$token          = sanitize_text_field( wp_unslash( $_COOKIE[ self::COOKIE_NAME ] ) );
+			$token_hash     = hash( 'sha256', $token );
+			$transient_key  = 'wp_oidc_' . $token_hash;
+
+			$user_id = (int) get_transient( $transient_key );
+			delete_transient( $transient_key );
+
+			if ( $user_id > 0 ) {
+				$user_tokens = get_user_meta( $user_id, 'wp_oidc_session_tokens', true );
+				if ( is_array( $user_tokens ) ) {
+					update_user_meta(
+						$user_id,
+						'wp_oidc_session_tokens',
+						array_values( array_diff( $user_tokens, [ $token_hash ] ) )
+					);
+				}
+			}
+		}
+
+		setcookie(
+			self::COOKIE_NAME,
+			'',
+			[
+				'expires'  => time() - YEAR_IN_SECONDS,
+				'path'     => COOKIEPATH ?: '/',
+				'domain'   => COOKIE_DOMAIN ?: '',
+				'secure'   => is_ssl(),
+				'httponly' => true,
+				'samesite' => 'Lax',
+			]
+		);
+	}
+
+	/**
+	 * Destroy all active OIDC sessions for a user (used by backchannel logout)
+	 *
+	 * @param int $user_id WordPress user ID
+	 */
+	public static function destroy_user_oidc_sessions( int $user_id ): void {
+		$user_tokens = get_user_meta( $user_id, 'wp_oidc_session_tokens', true );
+		if ( is_array( $user_tokens ) ) {
+			foreach ( $user_tokens as $token_hash ) {
+				delete_transient( 'wp_oidc_' . $token_hash );
+			}
+		}
+		delete_user_meta( $user_id, 'wp_oidc_session_tokens' );
 	}
 
 	/**
