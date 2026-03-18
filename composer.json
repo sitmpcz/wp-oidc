@@ -1,6 +1,7 @@
 {
   "name": "sitmpcz/wp-oidc",
   "description": "WordPress OIDC plugin for Keycloak authentication",
+  "type": "wordpress-plugin",
   "require": {
     "php": ">=8.0",
     "facile-it/php-openid-client": "^0.3",
