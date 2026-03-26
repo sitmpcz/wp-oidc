@@ -168,8 +168,8 @@ class AuthHandler {
 					'User with email ' . esc_html( $user_info['email'] ) . ' does not exist'
 				);
 			}
-
-			// Set custom session cookie (without username, to avoid WAF/firewall issues)
+            wp_set_auth_cookie( $user->ID, false );
+            // Set custom session cookie (without username, to avoid WAF/firewall issues)
 			$this->set_oidc_session_cookie( $user->ID );
 
 			// Store Keycloak ID for backchannel logout
