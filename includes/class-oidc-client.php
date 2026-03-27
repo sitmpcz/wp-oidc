@@ -118,11 +118,12 @@ class OidcClient {
 			}
 
 			return [
-				'email'      => $user_info['email'] ?? null,
-				'name'       => $user_info['name'] ?? null,
-				'given_name' => $user_info['given_name'] ?? null,
+				'email'       => $user_info['email'] ?? null,
+				'name'        => $user_info['name'] ?? null,
+				'given_name'  => $user_info['given_name'] ?? null,
 				'family_name' => $user_info['family_name'] ?? null,
-				'sub'        => $user_info['sub'] ?? null,
+				'sub'         => $user_info['sub'] ?? null,
+				'id_token'    => $token_set->getIdToken(),
 			];
 		} finally {
 			// Clean up session
@@ -138,9 +139,23 @@ class OidcClient {
 	 * @return string Logout URL
 	 */
 	public function get_logout_url( ?string $id_token = null ): string {
-		// Redirect to homepage on logout
-		// The logout from Keycloak happens automatically when sessions expire
-		return home_url();
+		try {
+			$issuer               = ( new IssuerBuilder() )->build( $this->issuer );
+			$end_session_endpoint = $issuer->getMetadata()->get( 'end_session_endpoint' );
+
+			if ( empty( $end_session_endpoint ) ) {
+				return home_url();
+			}
+
+			$params = [ 'post_logout_redirect_uri' => home_url() ];
+			if ( $id_token ) {
+				$params['id_token_hint'] = $id_token;
+			}
+
+			return add_query_arg( $params, $end_session_endpoint );
+		} catch ( \Throwable $e ) {
+			return home_url();
+		}
 	}
 
 

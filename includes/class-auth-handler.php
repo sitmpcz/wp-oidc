@@ -177,10 +177,15 @@ class AuthHandler {
 				update_user_meta( $user->ID, 'wp_oidc_keycloak_id', $user_info['sub'] );
 			}
 
-			// Store user info in session for later reference
 			if ( session_status() === PHP_SESSION_NONE ) {
 				session_start();
 			}
+
+			// Store id_token for RP-initiated logout
+			if ( ! empty( $user_info['id_token'] ) ) {
+				$_SESSION['wp_oidc_id_token'] = $user_info['id_token'];
+			}
+
 			$_SESSION['wp_oidc_user_info'] = $user_info;
 
 			// Redirect to admin
