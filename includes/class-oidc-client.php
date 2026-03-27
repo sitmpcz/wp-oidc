@@ -139,23 +139,18 @@ class OidcClient {
 	 * @return string Logout URL
 	 */
 	public function get_logout_url( ?string $id_token = null ): string {
-		try {
-			$issuer               = ( new IssuerBuilder() )->build( $this->issuer );
-			$end_session_endpoint = $issuer->getMetadata()->get( 'end_session_endpoint' );
+		$end_session_endpoint = get_transient( 'wp_oidc_end_session_' . md5( $this->issuer ) );
 
-			if ( empty( $end_session_endpoint ) ) {
-				return home_url();
-			}
-
-			$params = [ 'post_logout_redirect_uri' => home_url() ];
-			if ( $id_token ) {
-				$params['id_token_hint'] = $id_token;
-			}
-
-			return add_query_arg( $params, $end_session_endpoint );
-		} catch ( \Throwable $e ) {
+		if ( empty( $end_session_endpoint ) ) {
 			return home_url();
 		}
+
+		$params = [ 'post_logout_redirect_uri' => home_url() ];
+		if ( $id_token ) {
+			$params['id_token_hint'] = $id_token;
+		}
+
+		return add_query_arg( $params, $end_session_endpoint );
 	}
 
 
@@ -168,6 +163,12 @@ class OidcClient {
 		if ( $this->client === null ) {
 			// Build issuer from discovery document
 			$issuer = ( new IssuerBuilder() )->build( $this->issuer );
+
+			// Cache end_session_endpoint so logout needs no extra HTTP request
+			$end_session_endpoint = $issuer->getMetadata()->get( 'end_session_endpoint' );
+			if ( $end_session_endpoint ) {
+				set_transient( 'wp_oidc_end_session_' . md5( $this->issuer ), $end_session_endpoint, DAY_IN_SECONDS );
+			}
 
 			// Create client metadata
 			$client_metadata = ClientMetadata::fromArray( [
