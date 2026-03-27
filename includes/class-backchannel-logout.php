@@ -53,9 +53,12 @@ class BackchannelLogout {
 	 * We validate the token and log out the corresponding user.
 	 */
 	public function handle_logout(): void {
+		error_log( '[wp-oidc] Backchannel logout request received' );
+
 		$logout_token = isset( $_POST['logout_token'] ) ? trim( wp_unslash( $_POST['logout_token'] ) ) : ''; // phpcs:ignore WordPress.Security.NonceVerification.Missing
 
 		if ( empty( $logout_token ) ) {
+			error_log( '[wp-oidc] Backchannel logout: missing logout_token' );
 			wp_send_json_error( 'Missing logout_token', 400 );
 			return;
 		}
@@ -64,14 +67,15 @@ class BackchannelLogout {
 			$claims = $this->validate_logout_token( $logout_token );
 
 			if ( ! $claims ) {
+				error_log( '[wp-oidc] Backchannel logout: invalid logout token' );
 				wp_send_json_error( 'Invalid logout token', 400 );
 				return;
 			}
 
-			// Spec allows logout by sub or sid; sub is sufficient here
 			$user_sub = $claims['sub'] ?? null;
 
 			if ( ! $user_sub ) {
+				error_log( '[wp-oidc] Backchannel logout: no sub claim' );
 				wp_send_json_error( 'No sub claim in token', 400 );
 				return;
 			}
@@ -79,11 +83,12 @@ class BackchannelLogout {
 			$user = $this->find_user_by_keycloak_id( $user_sub );
 
 			if ( ! $user ) {
-				// Not an error — user may have never logged in or was already logged out
+				error_log( '[wp-oidc] Backchannel logout: user not found for sub=' . $user_sub );
 				wp_send_json_success( 'User not found' );
 				return;
 			}
 
+			error_log( '[wp-oidc] Backchannel logout: destroying sessions for user #' . $user->ID );
 			AuthHandler::destroy_user_oidc_sessions( $user->ID );
 
 			$sessions = \WP_Session_Tokens::get_instance( $user->ID );
@@ -91,8 +96,10 @@ class BackchannelLogout {
 
 			do_action( 'wp_oidc_backchannel_logout', $user->ID, $user_sub );
 
+			error_log( '[wp-oidc] Backchannel logout: success for user #' . $user->ID );
 			wp_send_json_success( 'User logged out' );
-		} catch ( \Exception $e ) {
+		} catch ( \Throwable $e ) {
+			error_log( '[wp-oidc] Backchannel logout error: ' . $e->getMessage() );
 			wp_send_json_error( 'Logout processing failed: ' . $e->getMessage(), 500 );
 		}
 	}
@@ -107,6 +114,7 @@ class BackchannelLogout {
 	private function validate_logout_token( string $logout_token ): array|false {
 		$parts = explode( '.', $logout_token );
 		if ( count( $parts ) !== 3 ) {
+			error_log( '[wp-oidc] validate: not a valid JWT (parts != 3)' );
 			return false;
 		}
 
@@ -116,45 +124,51 @@ class BackchannelLogout {
 		);
 
 		if ( ! is_array( $claims ) ) {
+			error_log( '[wp-oidc] validate: cannot decode JWT payload' );
 			return false;
 		}
 
-		// Verify JWT signature using issuer's JWKS
+		error_log( '[wp-oidc] validate: claims iss=' . ( $claims['iss'] ?? '(none)' )
+			. ' aud=' . wp_json_encode( $claims['aud'] ?? null )
+			. ' sub=' . ( $claims['sub'] ?? '(none)' )
+			. ' events=' . wp_json_encode( array_keys( $claims['events'] ?? [] ) ) );
+
 		if ( ! $this->verify_signature( $logout_token ) ) {
+			error_log( '[wp-oidc] validate: signature verification failed' );
 			return false;
 		}
 
-		// iss must match configured issuer
 		if ( ( $claims['iss'] ?? '' ) !== $this->issuer_url ) {
+			error_log( '[wp-oidc] validate: iss mismatch, expected=' . $this->issuer_url . ' got=' . ( $claims['iss'] ?? '' ) );
 			return false;
 		}
 
-		// aud must contain our client_id
 		$aud = $claims['aud'] ?? [];
 		if ( is_string( $aud ) ) {
 			$aud = [ $aud ];
 		}
 		if ( ! in_array( $this->client_id, $aud, true ) ) {
+			error_log( '[wp-oidc] validate: aud mismatch, expected=' . $this->client_id . ' got=' . wp_json_encode( $aud ) );
 			return false;
 		}
 
-		// iat must be present and not more than 5 minutes in the past
 		if ( ! isset( $claims['iat'] ) || ( time() - (int) $claims['iat'] ) > 300 ) {
+			error_log( '[wp-oidc] validate: iat check failed, iat=' . ( $claims['iat'] ?? 'null' ) . ' now=' . time() );
 			return false;
 		}
 
-		// nonce must NOT be present in logout tokens (per spec)
 		if ( isset( $claims['nonce'] ) ) {
+			error_log( '[wp-oidc] validate: nonce present (forbidden in logout token)' );
 			return false;
 		}
 
-		// events claim must be a JSON object with the backchannel logout event key
 		if ( ! isset( $claims['events'][ self::BACKCHANNEL_LOGOUT_EVENT ] ) ) {
+			error_log( '[wp-oidc] validate: missing backchannel-logout event, keys=' . wp_json_encode( array_keys( $claims['events'] ?? [] ) ) );
 			return false;
 		}
 
-		// sub or sid must be present
 		if ( empty( $claims['sub'] ) && empty( $claims['sid'] ) ) {
+			error_log( '[wp-oidc] validate: neither sub nor sid present' );
 			return false;
 		}
 
@@ -171,6 +185,7 @@ class BackchannelLogout {
 	private function verify_signature( string $token ): bool {
 		$jwks_data = $this->get_jwks();
 		if ( ! $jwks_data ) {
+			error_log( '[wp-oidc] verify_signature: JWKS fetch failed' );
 			return false;
 		}
 
@@ -185,8 +200,14 @@ class BackchannelLogout {
 			$jws          = $serializer->unserialize( $token );
 			$jwkset       = JWKSet::createFromKeyData( $jwks_data );
 
-			return $jws_verifier->verifyWithKeySet( $jws, $jwkset, 0 );
+			$result = $jws_verifier->verifyWithKeySet( $jws, $jwkset, 0 );
+			if ( ! $result ) {
+				error_log( '[wp-oidc] verify_signature: signature mismatch' );
+			}
+
+			return $result;
 		} catch ( \Throwable $e ) {
+			error_log( '[wp-oidc] verify_signature: ' . get_class( $e ) . ': ' . $e->getMessage() );
 			return false;
 		}
 	}
