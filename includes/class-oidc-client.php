@@ -123,7 +123,6 @@ class OidcClient {
 				'given_name'  => $user_info['given_name'] ?? null,
 				'family_name' => $user_info['family_name'] ?? null,
 				'sub'         => $user_info['sub'] ?? null,
-				'id_token'    => $token_set->getIdToken(),
 			];
 		} finally {
 			// Clean up session
@@ -138,19 +137,17 @@ class OidcClient {
 	 *
 	 * @return string Logout URL
 	 */
-	public function get_logout_url( ?string $id_token = null ): string {
+	public function get_logout_url(): string {
 		$end_session_endpoint = get_transient( 'wp_oidc_end_session_' . md5( $this->issuer ) );
 
 		if ( empty( $end_session_endpoint ) ) {
 			return home_url();
 		}
 
-		$params = [ 'post_logout_redirect_uri' => home_url() ];
-		if ( $id_token ) {
-			$params['id_token_hint'] = $id_token;
-		}
-
-		return add_query_arg( $params, $end_session_endpoint );
+		return add_query_arg( [
+			'client_id'                => $this->client_id,
+			'post_logout_redirect_uri' => home_url(),
+		], $end_session_endpoint );
 	}
 
 

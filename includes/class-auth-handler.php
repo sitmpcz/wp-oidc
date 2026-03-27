@@ -180,12 +180,6 @@ class AuthHandler {
 			if ( session_status() === PHP_SESSION_NONE ) {
 				session_start();
 			}
-
-			// Store id_token for RP-initiated logout
-			if ( ! empty( $user_info['id_token'] ) ) {
-				$_SESSION['wp_oidc_id_token'] = $user_info['id_token'];
-			}
-
 			$_SESSION['wp_oidc_user_info'] = $user_info;
 
 			// Redirect to admin
@@ -200,20 +194,9 @@ class AuthHandler {
 	 * Handle logout - redirect to Keycloak logout
 	 */
 	public function handle_logout(): void {
-		// Clear OIDC session cookie
 		$this->clear_oidc_session_cookie();
 
-		// Get ID token if available (for RP-initiated logout)
-		$id_token = null;
-		if ( session_status() === PHP_SESSION_NONE ) {
-			session_start();
-		}
-		if ( ! empty( $_SESSION['wp_oidc_id_token'] ) ) {
-			$id_token = $_SESSION['wp_oidc_id_token'];
-		}
-
-		// Redirect to Keycloak logout
-		$logout_url = $this->oidc_client->get_logout_url( $id_token );
+		$logout_url = $this->oidc_client->get_logout_url();
 		wp_redirect( $logout_url );
 		exit;
 	}
