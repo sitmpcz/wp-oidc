@@ -64,11 +64,12 @@ class BackchannelLogout {
 		}
 
 		try {
-			$claims = $this->validate_logout_token( $logout_token );
+			$error  = null;
+			$claims = $this->validate_logout_token( $logout_token, $error );
 
 			if ( ! $claims ) {
-				error_log( '[wp-oidc] Backchannel logout: invalid logout token' );
-				wp_send_json_error( 'Invalid logout token', 400 );
+				error_log( '[wp-oidc] Backchannel logout: ' . $error );
+				wp_send_json_error( $error, 400 );
 				return;
 			}
 
@@ -111,10 +112,10 @@ class BackchannelLogout {
 	 *
 	 * @return array|false Token claims if valid, false otherwise
 	 */
-	private function validate_logout_token( string $logout_token ): array|false {
+	private function validate_logout_token( string $logout_token, ?string &$error = null ): array|false {
 		$parts = explode( '.', $logout_token );
 		if ( count( $parts ) !== 3 ) {
-			error_log( '[wp-oidc] validate: not a valid JWT (parts != 3)' );
+			$error = 'not a valid JWT';
 			return false;
 		}
 
@@ -124,22 +125,16 @@ class BackchannelLogout {
 		);
 
 		if ( ! is_array( $claims ) ) {
-			error_log( '[wp-oidc] validate: cannot decode JWT payload' );
+			$error = 'cannot decode JWT payload';
 			return false;
 		}
 
-		error_log( '[wp-oidc] validate: claims iss=' . ( $claims['iss'] ?? '(none)' )
-			. ' aud=' . wp_json_encode( $claims['aud'] ?? null )
-			. ' sub=' . ( $claims['sub'] ?? '(none)' )
-			. ' events=' . wp_json_encode( array_keys( $claims['events'] ?? [] ) ) );
-
-		if ( ! $this->verify_signature( $logout_token ) ) {
-			error_log( '[wp-oidc] validate: signature verification failed' );
+		if ( ! $this->verify_signature( $logout_token, $error ) ) {
 			return false;
 		}
 
 		if ( ( $claims['iss'] ?? '' ) !== $this->issuer_url ) {
-			error_log( '[wp-oidc] validate: iss mismatch, expected=' . $this->issuer_url . ' got=' . ( $claims['iss'] ?? '' ) );
+			$error = 'iss mismatch: expected=' . $this->issuer_url . ' got=' . ( $claims['iss'] ?? '(none)' );
 			return false;
 		}
 
@@ -148,27 +143,27 @@ class BackchannelLogout {
 			$aud = [ $aud ];
 		}
 		if ( ! in_array( $this->client_id, $aud, true ) ) {
-			error_log( '[wp-oidc] validate: aud mismatch, expected=' . $this->client_id . ' got=' . wp_json_encode( $aud ) );
+			$error = 'aud mismatch: expected=' . $this->client_id . ' got=' . implode( ',', $aud );
 			return false;
 		}
 
 		if ( ! isset( $claims['iat'] ) || ( time() - (int) $claims['iat'] ) > 300 ) {
-			error_log( '[wp-oidc] validate: iat check failed, iat=' . ( $claims['iat'] ?? 'null' ) . ' now=' . time() );
+			$error = 'iat check failed: iat=' . ( $claims['iat'] ?? 'null' ) . ' now=' . time();
 			return false;
 		}
 
 		if ( isset( $claims['nonce'] ) ) {
-			error_log( '[wp-oidc] validate: nonce present (forbidden in logout token)' );
+			$error = 'nonce present (forbidden in logout token)';
 			return false;
 		}
 
 		if ( ! isset( $claims['events'][ self::BACKCHANNEL_LOGOUT_EVENT ] ) ) {
-			error_log( '[wp-oidc] validate: missing backchannel-logout event, keys=' . wp_json_encode( array_keys( $claims['events'] ?? [] ) ) );
+			$error = 'missing backchannel-logout event, got: ' . implode( ',', array_keys( $claims['events'] ?? [] ) );
 			return false;
 		}
 
 		if ( empty( $claims['sub'] ) && empty( $claims['sid'] ) ) {
-			error_log( '[wp-oidc] validate: neither sub nor sid present' );
+			$error = 'neither sub nor sid present';
 			return false;
 		}
 
@@ -182,10 +177,10 @@ class BackchannelLogout {
 	 *
 	 * @return bool
 	 */
-	private function verify_signature( string $token ): bool {
+	private function verify_signature( string $token, ?string &$error = null ): bool {
 		$jwks_data = $this->get_jwks();
 		if ( ! $jwks_data ) {
-			error_log( '[wp-oidc] verify_signature: JWKS fetch failed' );
+			$error = 'JWKS fetch failed (issuer=' . $this->issuer_url . ')';
 			return false;
 		}
 
@@ -200,14 +195,14 @@ class BackchannelLogout {
 			$jws          = $serializer->unserialize( $token );
 			$jwkset       = JWKSet::createFromKeyData( $jwks_data );
 
-			$result = $jws_verifier->verifyWithKeySet( $jws, $jwkset, 0 );
-			if ( ! $result ) {
-				error_log( '[wp-oidc] verify_signature: signature mismatch' );
+			if ( ! $jws_verifier->verifyWithKeySet( $jws, $jwkset, 0 ) ) {
+				$error = 'signature mismatch';
+				return false;
 			}
 
-			return $result;
+			return true;
 		} catch ( \Throwable $e ) {
-			error_log( '[wp-oidc] verify_signature: ' . get_class( $e ) . ': ' . $e->getMessage() );
+			$error = 'signature exception: ' . get_class( $e ) . ': ' . $e->getMessage();
 			return false;
 		}
 	}
