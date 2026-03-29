@@ -69,6 +69,7 @@ class BackchannelLogout {
 
 			if ( ! $claims ) {
 				error_log( '[wp-oidc] Backchannel logout: ' . $error );
+				update_option( 'wp_oidc_last_backchannel_error', '[' . gmdate( 'Y-m-d H:i:s' ) . '] ' . $error );
 				wp_send_json_error( $error, 400 );
 				return;
 			}
