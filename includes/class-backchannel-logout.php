@@ -5,6 +5,7 @@ namespace WpOidc;
 use Facile\OpenIDClient\Issuer\IssuerBuilder;
 use Jose\Component\Core\AlgorithmManager;
 use Jose\Component\Core\JWKSet;
+use Jose\Component\Signature\Algorithm\EdDSA;
 use Jose\Component\Signature\Algorithm\ES256;
 use Jose\Component\Signature\Algorithm\ES384;
 use Jose\Component\Signature\Algorithm\ES512;
@@ -189,6 +190,7 @@ class BackchannelLogout {
 			$algorithm_manager = new AlgorithmManager( [
 				new RS256(), new RS384(), new RS512(),
 				new ES256(), new ES384(), new ES512(),
+				new EdDSA(),
 			] );
 
 			$jws_verifier = new JWSVerifier( $algorithm_manager );

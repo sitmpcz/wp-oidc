@@ -5,7 +5,8 @@
   "require": {
     "php": ">=8.0",
     "facile-it/php-openid-client": "^0.4",
-    "php-http/guzzle7-adapter": "^1.0"
+    "php-http/guzzle7-adapter": "^1.0",
+    "web-token/jwt-signature-algorithm-eddsa": "^3.0"
   },
   "autoload": {
     "classmap": ["includes/"]
